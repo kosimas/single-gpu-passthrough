@@ -28,10 +28,22 @@ DATE=$(date +"%m/%d/%Y %R:%S :")
 ## Sets dispmgr var as null ##
 DISPMGR="null"
 
+session_type="$XDG_SESSION_TYPE"
+
+if [ "$session_type" == "x11" ]; then
+    # Xorg (X11) is in use
+    echo "Xorg (X11) is currently in use."
+elif [ "$session_type" == "wayland" ]; then
+    # Wayland is in use
+    echo "Wayland is currently in use."
+else
+    # Unknown session type
+    echo "Warning: Unknown window manager or session type."
+fi
+
 ################################## Script ###################################
 
 echo "$DATE Beginning of Startup!"
-
 
 function stop_display_manager_if_running {
     ## Get display manager on systemd based distros ##
@@ -41,6 +53,7 @@ function stop_display_manager_if_running {
 
         ## Stop display manager using systemd ##
         if systemctl is-active --quiet "$DISPMGR.service"; then
+            echo "$DATE Display Manager is running. trying to stop..."
             grep -qsF "$DISPMGR" "/tmp/vfio-store-display-manager" || echo "$DISPMGR" >/tmp/vfio-store-display-manager
             systemctl stop "$DISPMGR.service"
             systemctl isolate multi-user.target
@@ -53,26 +66,27 @@ function stop_display_manager_if_running {
         return
 
     fi
-
 }
 
 function kde-clause {
-
     echo "$DATE Display Manager = display-manager"
 
     ## Stop display manager using systemd ##
     if systemctl is-active --quiet "display-manager.service"; then
-    
-        grep -qsF "display-manager" "/tmp/vfio-store-display-manager"  || echo "display-manager" >/tmp/vfio-store-display-manager
+
+        grep -qsF "display-manager" "/tmp/vfio-store-display-manager" || echo "display-manager" >/tmp/vfio-store-display-manager
         systemctl stop "display-manager.service"
     fi
 
-        while systemctl is-active --quiet "display-manager.service"; do
-                sleep 2
-        done
+    while systemctl is-active --quiet "display-manager.service"; do
+        sleep 2
+    done
+
+    if [ "$session_type" == "wayland" ]; then
+        qdbus "org.kde.ksmserver" "/KSMServer" "logout" 0 0 1
+    fi
 
     return
-
 }
 
 ####################################################################################################################
@@ -83,17 +97,17 @@ function kde-clause {
 if pgrep -l "plasma" | grep "plasmashell"; then
     echo "$DATE Display Manager is KDE, running KDE clause!"
     kde-clause
-    else
-        echo "$DATE Display Manager is not KDE!"
-        stop_display_manager_if_running
+else
+    echo "$DATE Display Manager is not KDE!"
+    stop_display_manager_if_running
 fi
 
 ## Unbind EFI-Framebuffer ##
 if test -e "/tmp/vfio-is-nvidia"; then
     rm -f /tmp/vfio-is-nvidia
-    else
-        test -e "/tmp/vfio-is-amd"
-        rm -f /tmp/vfio-is-amd
+else
+    test -e "/tmp/vfio-is-amd"
+    rm -f /tmp/vfio-is-amd
 fi
 
 sleep "1"
@@ -104,23 +118,22 @@ sleep "1"
 if test -e "/tmp/vfio-bound-consoles"; then
     rm -f /tmp/vfio-bound-consoles
 fi
-for (( i = 0; i < 16; i++))
-do
-  if test -x /sys/class/vtconsole/vtcon"${i}"; then
-      if [ "$(grep -c "frame buffer" /sys/class/vtconsole/vtcon"${i}"/name)" = 1 ]; then
-	       echo 0 > /sys/class/vtconsole/vtcon"${i}"/bind
-           echo "$DATE Unbinding Console ${i}"
-           echo "$i" >> /tmp/vfio-bound-consoles
-      fi
-  fi
+for ((i = 0; i < 16; i++)); do
+    if test -x /sys/class/vtconsole/vtcon"${i}"; then
+        if [ "$(grep -c "frame buffer" /sys/class/vtconsole/vtcon"${i}"/name)" = 1 ]; then
+            echo 0 >/sys/class/vtconsole/vtcon"${i}"/bind
+            echo "$DATE Unbinding Console ${i}"
+            echo "$i" >>/tmp/vfio-bound-consoles
+        fi
+    fi
 done
 
 sleep "1"
 
-if lspci -nn | grep -e VGA | grep -s NVIDIA ; then
+if lspci -nn | grep -e VGA | grep -s NVIDIA; then
     echo "$DATE System has an NVIDIA GPU"
     grep -qsF "true" "/tmp/vfio-is-nvidia" || echo "true" >/tmp/vfio-is-nvidia
-    echo efi-framebuffer.0 > /sys/bus/platform/drivers/efi-framebuffer/unbind
+    echo efi-framebuffer.0 >/sys/bus/platform/drivers/efi-framebuffer/unbind
 
     ## Unload NVIDIA GPU drivers ##
     modprobe -r nvidia_uvm
@@ -134,10 +147,10 @@ if lspci -nn | grep -e VGA | grep -s NVIDIA ; then
     echo "$DATE NVIDIA GPU Drivers Unloaded"
 fi
 
-if lspci -nn | grep -e VGA | grep -s AMD ; then
+if lspci -nn | grep -e VGA | grep -s AMD; then
     echo "$DATE System has an AMD GPU"
     grep -qsF "true" "/tmp/vfio-is-amd" || echo "true" >/tmp/vfio-is-amd
-    echo efi-framebuffer.0 > /sys/bus/platform/drivers/efi-framebuffer/unbind
+    echo efi-framebuffer.0 >/sys/bus/platform/drivers/efi-framebuffer/unbind
 
     ## Unload AMD GPU drivers ##
     modprobe -r drm_kms_helper
